@@ -1,0 +1,93 @@
+name: Build APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Create Flutter project
+        run: flutter create --org com.voicelibrary --project-name whatsapp_scheduler --platforms android build_app
+
+      - name: Add app code
+        run: cp source/main.dart build_app/lib/main.dart
+
+      - name: Add packages
+        working-directory: build_app
+        run: flutter pub add flutter_local_notifications:^17.2.4 flutter_timezone:^3.0.0 timezone url_launcher share_plus file_picker shared_preferences path_provider path
+
+      - name: Patch Android config
+        working-directory: build_app
+        run: |
+          python3 - <<'PY'
+          import os
+
+          mp = 'android/app/src/main/AndroidManifest.xml'
+          s = open(mp).read()
+          perms = '''    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+              <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+              <uses-permission android:name="android.permission.VIBRATE"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+          '''
+          recv = '''        <receiver android:exported="false"
+                  android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"/>
+                <receiver android:exported="false"
+                  android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
+                  <intent-filter>
+                    <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                    <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                    <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
+                    <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                  </intent-filter>
+                </receiver>
+          '''
+          assert '<application' in s and '</application>' in s
+          s = s.replace('<application', perms + '    <application', 1)
+          s = s.replace('</application>', recv + '    </application>', 1)
+          s = s.replace('android:label="whatsapp_scheduler"', 'android:label="WhatsApp Scheduler"')
+          open(mp, 'w').write(s)
+
+          kts = 'android/app/build.gradle.kts'
+          groovy = 'android/app/build.gradle'
+          if os.path.exists(kts):
+              g = open(kts).read()
+              assert 'compileOptions {' in g
+              g = g.replace('compileOptions {', 'compileOptions {\n        isCoreLibraryDesugaringEnabled = true', 1)
+              g += '\ndependencies {\n    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")\n}\n'
+              open(kts, 'w').write(g)
+          else:
+              g = open(groovy).read()
+              assert 'compileOptions {' in g
+              g = g.replace('compileOptions {', 'compileOptions {\n        coreLibraryDesugaringEnabled true', 1)
+              g += "\ndependencies {\n    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.0.4'\n}\n"
+              open(groovy, 'w').write(g)
+          print('Patched OK')
+          PY
+
+      - name: Build release APK
+        working-directory: build_app
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: whatsapp-scheduler-apk
+          path: build_app/build/app/outputs/flutter-apk/app-release.apk
+          
